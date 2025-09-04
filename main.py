@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-Deep Research CLI (Terminal-only)
----------------------------------
+Deep Research CLI (Terminal-only) — Interactive
+-----------------------------------------------
 
-A single-file Python app that:
-- Takes a topic from the user
-- Searches multiple scholarly sources (Semantic Scholar; optional IEEE Xplore and Google Scholar via SerpAPI)
-- Ranks papers by semantic relevance (Gemini embeddings), citation count, and recency
-- Generates an in-depth Markdown report with synthesis, gap analysis, and future scope using Google Gemini
-- Saves JSON/CSV of the ranked paper set
+Adds a user-interactive refinement loop and Q&A:
+- After generating a report, the app prompts for feedback.
+- If feedback requests refinement, it fetches *new* papers based on the feedback, re-ranks, and regenerates the report. Repeats until satisfied.
+- If the user asks questions instead, it answers with Gemini using the *current report + top papers* as context (no regeneration). This Q&A is recursive as long as the user wishes.
+- Saves JSON/CSV of the ranked paper set each time a report is regenerated.
 
 Usage
 -----
@@ -19,18 +18,12 @@ python deep_research_cli.py "your research topic here" \
     --model gemini-2.5-flash \
     --out report.md
 
-(top-k is the number of papers that are being used as context for the report generation; max-papers is the number of papers to fetch and rank; weights are the relative weights of semantic relevance, citation count, and recency)
-
-Example:
-
-python3 main.py "agentic AI for autonomous scientific discovery" --top-k 3 --max-papers 50 --out report.md
-
-Env Vars (required/optional)
-----------------------------
-GEMINI_API_KEY      (required)
-SEMANTIC_SCHOLAR_KEY (optional; not required for public search but helps with quota)
-IEEE_API_KEY        (optional)
-SERPAPI_KEY         (optional; for Google Scholar via SerpAPI)
+Environment
+-----------
+GEMINI_API_KEY        (required)
+SEMANTIC_SCHOLAR_KEY  (optional)
+IEEE_API_KEY          (optional)
+SERPAPI_KEY           (optional; for Google Scholar via SerpAPI)
 
 Install
 -------
@@ -38,10 +31,10 @@ pip install google-generativeai requests numpy pandas tenacity python-dateutil t
 
 Notes
 -----
-- The script prioritizes Semantic Scholar (robust public API). IEEE and Google Scholar are used when keys are provided.
-- Full-text PDFs are fetched only if an open-access link is available in metadata. Otherwise abstracts are used.
-- Ranking uses a weighted score of: semantic relevance, log-scaled citations, and recency.
-- All outputs are saved alongside the script unless absolute paths are provided.
+- Primary source: Semantic Scholar API.
+- IEEE Xplore and Google Scholar (via SerpAPI) are optional enrichers.
+- Ranking = weighted mixture of (semantic relevance, log citations, recency).
+- Interactivity loop supports [refine | ask | accept | exit].
 """
 
 from __future__ import annotations
@@ -64,6 +57,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from tqdm import tqdm
 from rich.console import Console
 from rich.table import Table
+from rich.panel import Panel
+from rich.prompt import Prompt, Confirm
 from rich import box
 
 # ----------- Globals -----------
@@ -258,7 +253,6 @@ class SerpAPIGoogleScholarClient:
             year = None
             pub_info = (r.get("publication_info") or {}).get("summary")
             if pub_info:
-                # crude year parse
                 for tok in pub_info.split():
                     if tok.isdigit() and len(tok) == 4:
                         try:
@@ -302,7 +296,6 @@ def _setup_gemini(api_key: str, model_name: str):
 
 
 def gemini_embed(embed_fn, text: str, task_type: str = "retrieval_query", model: str = "text-embedding-004") -> np.ndarray:
-    import google.generativeai as genai
     try:
         res = embed_fn(model=model, content=text, task_type=task_type)
         vec = np.array(res["embedding"], dtype=np.float32)
@@ -340,26 +333,28 @@ def fetch_papers(query: str, max_papers: int, api_keys: Dict[str, Optional[str]]
         console.rule("Fetching from Google Scholar (SerpAPI)")
         collected.extend(serp.search(query, limit=min(20, max_papers//4 or 10)))
 
-    # Deduplicate by DOI or (title+year)
+    papers = dedup_papers(collected)
+    console.print(f"Collected {len(papers)} unique papers.")
+    return papers
+
+
+def dedup_papers(collected: List[Paper]) -> List[Paper]:
     dedup: Dict[str, Paper] = {}
     for p in collected:
         key = (p.doi or f"{p.title.strip().lower()}::{p.year or ''}")
         if key not in dedup:
             dedup[key] = p
         else:
-            # merge missing fields
             q = dedup[key]
             for f in ["abstract", "venue", "url", "pdf_url", "citation_count"]:
                 if getattr(q, f) in (None, "") and getattr(p, f) not in (None, ""):
                     setattr(q, f, getattr(p, f))
-    papers = list(dedup.values())
-    console.print(f"Collected {len(papers)} unique papers.")
-    return papers
+    return list(dedup.values())
 
 
-def score_and_rank(papers: List[Paper], topic: str, weights: Tuple[float, float, float], gemini_api_key: str, embed_model: str = "text-embedding-004") -> List[Paper]:
+def score_and_rank(papers: List[Paper], topic: str, weights: Tuple[float, float, float], gemini_api_key: str, embed_model: str = "text-embedding-004", model_name: str = "gemini-2.5-flash") -> List[Paper]:
     w_rel, w_cit, w_rec = weights
-    model, embed_fn = _setup_gemini(gemini_api_key, model_name="gemini-2.0-flash")
+    _, embed_fn = _setup_gemini(gemini_api_key, model_name=model_name)
 
     topic_vec = gemini_embed(embed_fn, topic, task_type="retrieval_query", model=embed_model)
 
@@ -377,11 +372,7 @@ def score_and_rank(papers: List[Paper], topic: str, weights: Tuple[float, float,
     return papers
 
 
-def generate_report(topic: str, papers: List[Paper], top_k: int, gemini_api_key: str, model_name: str = "gemini-2.0-flash") -> str:
-    import google.generativeai as genai
-    genai.configure(api_key=gemini_api_key)
-    model = genai.GenerativeModel(model_name)
-
+def build_context_chunks(papers: List[Paper], top_k: int) -> Tuple[str, str]:
     top = papers[:top_k]
     bibliography = []
     for i, p in enumerate(top, 1):
@@ -397,6 +388,16 @@ def generate_report(topic: str, papers: List[Paper], top_k: int, gemini_api_key:
         - URL: {p.url or p.pdf_url or 'N/A'}
         - Abstract: {p.abstract or 'N/A'}
         """))
+
+    return "\n".join(context_chunks), "\n".join(bibliography)
+
+
+def generate_report(topic: str, papers: List[Paper], top_k: int, gemini_api_key: str, model_name: str = "gemini-2.5-flash") -> str:
+    import google.generativeai as genai
+    genai.configure(api_key=gemini_api_key)
+    model = genai.GenerativeModel(model_name)
+
+    context_str, bibliography_str = build_context_chunks(papers, top_k)
 
     sys_prompt = textwrap.dedent(f"""
     You are an expert research analyst. Given a topic and a set of top-ranked papers (with abstracts), write an IN-DEPTH report with:
@@ -417,7 +418,7 @@ def generate_report(topic: str, papers: List[Paper], top_k: int, gemini_api_key:
     """
     )
 
-    user_prompt = f"Topic: {topic}\n\nTop Papers Context (ranked):\n" + "\n".join(context_chunks) + "\n\nBibliography (use these citation indices):\n" + "\n".join(bibliography)
+    user_prompt = f"Topic: {topic}\n\nTop Papers Context (ranked):\n" + context_str + "\n\nBibliography (use these citation indices):\n" + bibliography_str
 
     console.rule("Generating report with Gemini")
     resp = model.generate_content(
@@ -449,6 +450,34 @@ def generate_report(topic: str, papers: List[Paper], top_k: int, gemini_api_key:
     return md
 
 
+def answer_question(question: str, report_md: str, papers: List[Paper], top_k: int, gemini_api_key: str, model_name: str = "gemini-2.5-flash") -> str:
+    """Answer a user question using the current report + top-k papers as context (no regeneration)."""
+    import google.generativeai as genai
+    genai.configure(api_key=gemini_api_key)
+    model = genai.GenerativeModel(model_name)
+
+    context_str, bibliography_str = build_context_chunks(papers, top_k)
+
+    sys_prompt = textwrap.dedent("""
+    You are a precise research assistant. Answer the user's question *only* using the provided context: the current report and the top papers. If information is not in context, say you don't have enough evidence rather than guessing. Cite papers with [#] indices where appropriate, and refer to report sections when helpful.
+    """)
+
+    user_prompt = (
+        "Question: " + question + "\n\n" +
+        "Current Report (excerpt allowed):\n" + report_md[:15000] + "\n\n" +
+        "Top Papers Context (ranked):\n" + context_str + "\n\nBibliography:\n" + bibliography_str
+    )
+
+    resp = model.generate_content(
+        [
+            {"role": "user", "parts": [{"text": sys_prompt + "\n\n" + user_prompt}]},
+        ],
+        safety_settings=None,
+        generation_config={"temperature": 0.4, "top_p": 0.9}
+    )
+    return getattr(resp, "text", "(No answer produced)")
+
+
 # ------------- I/O -------------
 
 def save_outputs(papers: List[Paper], report_md: str, out_path: str, csv_path: str, json_path: str) -> None:
@@ -456,18 +485,98 @@ def save_outputs(papers: List[Paper], report_md: str, out_path: str, csv_path: s
         f.write(report_md)
     console.print(f"[green]Saved report:[/green] {out_path}")
 
-    # CSV
-    with open(csv_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(papers[0].to_row().keys()))
-        writer.writeheader()
-        for p in papers:
-            writer.writerow(p.to_row())
-    console.print(f"[green]Saved rankings CSV:[/green] {csv_path}")
+    if papers:
+        # CSV
+        with open(csv_path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(papers[0].to_row().keys()))
+            writer.writeheader()
+            for p in papers:
+                writer.writerow(p.to_row())
+        console.print(f"[green]Saved rankings CSV:[/green] {csv_path}")
 
-    # JSON
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump([p.to_row() for p in papers], f, ensure_ascii=False, indent=2)
-    console.print(f"[green]Saved raw JSON:[/green] {json_path}")
+        # JSON
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump([p.to_row() for p in papers], f, ensure_ascii=False, indent=2)
+        console.print(f"[green]Saved raw JSON:[/green] {json_path}")
+
+
+# ------------- Interactive Loop -------------
+
+def interactive_loop(topic: str,
+                     papers: List[Paper],
+                     args: argparse.Namespace,
+                     api_keys: Dict[str, Optional[str]],
+                     gemini_key: str,
+                     report_md: str) -> Tuple[List[Paper], str]:
+    """REPL loop for refinement and Q&A until the user accepts."""
+    iteration = 1
+    current_topic = topic
+    current_papers = papers
+    current_report = report_md
+
+    while True:
+        console.print(Panel.fit("What would you like to do next?", subtitle="Type: [refine] to improve the report, [ask] to ask questions, [accept] to finish, [exit] to quit", style="bold cyan"))
+        choice = Prompt.ask("Choice", choices=["refine", "ask", "accept", "exit"], default="accept")
+
+        if choice == "accept":
+            console.print("[bold green]Great — keeping the current report as final.[/bold green]")
+            return current_papers, current_report
+        if choice == "exit":
+            console.print("[yellow]Exiting without further changes.[/yellow]")
+            return current_papers, current_report
+
+        if choice == "ask":
+            q = Prompt.ask("Enter your question (or blank to cancel)")
+            if not q.strip():
+                continue
+            console.rule("Answering your question")
+            answer = answer_question(q, current_report, current_papers, args.top_k, gemini_key, model_name=args.model)
+            console.print(Panel.fit(answer, title="Answer", border_style="magenta"))
+            # loop continues for recursive Q&A
+            continue
+
+        if choice == "refine":
+            fb = Prompt.ask("Describe the refinement you want (e.g., focus on 2023-2025, emphasize RAG evaluation, add healthcare apps, exclude surveys)")
+            if not fb.strip():
+                continue
+            iteration += 1
+
+            # Build a refined query by appending feedback keywords to the original topic.
+            refined_query = f"{topic} — refinement: {fb}"
+            console.rule(f"Refinement #{iteration}: fetching additional papers for: {refined_query}")
+
+            # Fetch *new* papers (half the original budget) to keep things snappy, then merge & dedup with current papers.
+            new_papers = fetch_papers(refined_query, max(10, args.max_papers // 2), api_keys)
+            merged = dedup_papers(current_papers + new_papers)
+
+            # Re-score against a refined topic signal (original topic + feedback).
+            reranked = score_and_rank(merged, f"{topic}. {fb}", tuple(args.weights), gemini_key, embed_model=args.embed_model, model_name=args.model)
+
+            # Pretty print top 10
+            table = Table(title=f"Top 10 Papers after Refinement #{iteration}", box=box.SIMPLE_HEAVY)
+            table.add_column("#")
+            table.add_column("Title")
+            table.add_column("Year")
+            table.add_column("Cites")
+            table.add_column("Rel")
+            table.add_column("Score")
+            for i, p in enumerate(reranked[:10], 1):
+                table.add_row(str(i), p.title[:80], str(p.year or ""), str(p.citation_count or 0), f"{p.similarity:.3f}", f"{p.score:.3f}")
+            console.print(table)
+
+            # Regenerate report
+            current_papers = reranked
+            current_report = generate_report(topic, current_papers, args.top_k, gemini_key, model_name=args.model)
+
+            # Autosave versioned outputs
+            stem, ext = os.path.splitext(args.out)
+            versioned_out = f"{stem}.v{iteration}{ext or '.md'}"
+            versioned_csv = f"{stem}.v{iteration}.csv"
+            versioned_json = f"{stem}.v{iteration}.json"
+            save_outputs(current_papers, current_report, versioned_out, versioned_csv, versioned_json)
+
+            console.print(Panel.fit(f"Refinement #{iteration} complete. Review the new report ({versioned_out}).", style="green"))
+            # loop continues for further refinements
 
 
 # ------------- CLI -------------
@@ -479,10 +588,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--top-k", type=int, default=25, help="Top K papers to include in report context")
     ap.add_argument("--weights", nargs=3, type=float, default=[0.5, 0.3, 0.2], metavar=("W_REL", "W_CIT", "W_REC"), help="Weights for relevance, citations, recency (sum not required but recommended)")
     ap.add_argument("--embed-model", type=str, default="text-embedding-004", help="Gemini embedding model")
-    ap.add_argument("--model", type=str, default="gemini-2.0-flash", help="Gemini generation model (e.g., gemini-2.0-flash)")
+    ap.add_argument("--model", type=str, default="gemini-2.5-flash", help="Gemini generation model (e.g., gemini-2.5-flash)")
     ap.add_argument("--out", type=str, default="report.md", help="Output Markdown path")
     ap.add_argument("--csv", type=str, default="ranked_papers.csv", help="Output CSV path")
     ap.add_argument("--json", type=str, default="ranked_papers.json", help="Output JSON path")
+    ap.add_argument("--no-interactive", action="store_true", help="Disable interactive refinement/Q&A loop")
     return ap.parse_args()
 
 
@@ -500,7 +610,7 @@ def main():
         "SERPAPI_KEY": "90d7f2c5ae56195b39b96f126064d594addf1d8f8693de857f69e0c54e2090d6",
     }
 
-    console.rule("Deep Research CLI")
+    console.rule("Deep Research CLI — Interactive")
     console.print(f"[bold]Topic:[/bold] {args.topic}")
 
     papers = fetch_papers(args.topic, args.max_papers, api_keys)
@@ -508,7 +618,7 @@ def main():
         console.print("[red]No papers found. Try broadening the query.[/red]")
         sys.exit(2)
 
-    ranked = score_and_rank(papers, args.topic, tuple(args.weights), gemini_key, embed_model=args.embed_model)
+    ranked = score_and_rank(papers, args.topic, tuple(args.weights), gemini_key, embed_model=args.embed_model, model_name=args.model)
 
     # Pretty print top 10 to terminal
     table = Table(title="Top 10 Papers", box=box.SIMPLE_HEAVY)
@@ -524,6 +634,11 @@ def main():
 
     report_md = generate_report(args.topic, ranked, args.top_k, gemini_key, model_name=args.model)
     save_outputs(ranked, report_md, args.out, args.csv, args.json)
+
+    if not args.no_interactive:
+        final_papers, final_report = interactive_loop(args.topic, ranked, args, api_keys, gemini_key, report_md)
+        # save final (overwrite main outputs)
+        save_outputs(final_papers, final_report, args.out, args.csv, args.json)
 
 
 if __name__ == "__main__":
