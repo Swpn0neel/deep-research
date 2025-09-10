@@ -337,6 +337,12 @@ def fetch_papers(query: str, max_papers: int, api_keys: Dict[str, Optional[str]]
     console.print(f"Collected {len(papers)} unique papers.")
     return papers
 
+def exclude_papers(papers: List[Paper], exclude: List[Paper]) -> List[Paper]:
+    """Remove papers from `papers` that match any in `exclude` by DOI or (title+year)."""
+    exclude_keys = set(
+        (p.doi or f"{p.title.strip().lower()}::{p.year or ''}") for p in exclude
+    )
+    return [p for p in papers if (p.doi or f"{p.title.strip().lower()}::{p.year or ''}") not in exclude_keys]
 
 def dedup_papers(collected: List[Paper]) -> List[Paper]:
     dedup: Dict[str, Paper] = {}
@@ -536,21 +542,22 @@ def interactive_loop(topic: str,
             continue
 
         if choice == "refine":
-            fb = Prompt.ask("Describe the refinement you want (e.g., focus on 2023-2025, emphasize RAG evaluation, add healthcare apps, exclude surveys)")
+            fb = Prompt.ask("Describe the refinement you want")
             if not fb.strip():
                 continue
             iteration += 1
 
-            # Build a refined query by appending feedback keywords to the original topic.
             refined_query = f"{topic} — refinement: {fb}"
             console.rule(f"Refinement #{iteration}: fetching additional papers for: {refined_query}")
 
-            # Fetch *new* papers (half the original budget) to keep things snappy, then merge & dedup with current papers.
+            # Fetch *new* papers (half the original budget)
             new_papers = fetch_papers(refined_query, max(10, args.max_papers // 2), api_keys)
+            # Exclude previous top papers from new candidates
+            new_papers = exclude_papers(new_papers, current_papers[:args.top_k])
             merged = dedup_papers(current_papers + new_papers)
-
+            # merged = dedup_papers(new_papers)
             # Re-score against a refined topic signal (original topic + feedback).
-            reranked = score_and_rank(merged, f"{topic}. {fb}", tuple(args.weights), gemini_key, embed_model=args.embed_model, model_name=args.model)
+            reranked = score_and_rank(merged, refined_query, tuple(args.weights), gemini_key, embed_model=args.embed_model, model_name=args.model)
 
             # Pretty print top 10
             table = Table(title=f"Top 10 Papers after Refinement #{iteration}", box=box.SIMPLE_HEAVY)
@@ -564,9 +571,9 @@ def interactive_loop(topic: str,
                 table.add_row(str(i), p.title[:80], str(p.year or ""), str(p.citation_count or 0), f"{p.similarity:.3f}", f"{p.score:.3f}")
             console.print(table)
 
-            # Regenerate report
+            # Regenerate report using refined topic and reranked papers
             current_papers = reranked
-            current_report = generate_report(topic, current_papers, args.top_k, gemini_key, model_name=args.model)
+            current_report = generate_report(refined_query, current_papers, args.top_k, gemini_key, model_name=args.model)
 
             # Autosave versioned outputs
             stem, ext = os.path.splitext(args.out)
@@ -576,7 +583,7 @@ def interactive_loop(topic: str,
             save_outputs(current_papers, current_report, versioned_out, versioned_csv, versioned_json)
 
             console.print(Panel.fit(f"Refinement #{iteration} complete. Review the new report ({versioned_out}).", style="green"))
-            # loop continues for further refinements
+
 
 
 # ------------- CLI -------------
