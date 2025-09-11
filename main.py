@@ -547,7 +547,7 @@ def interactive_loop(topic: str,
                 continue
             iteration += 1
 
-            refined_query = f"{topic} — refinement: {fb}"
+            refined_query = fb.strip() if fb.strip() else topic
             console.rule(f"Refinement #{iteration}: fetching additional papers for: {refined_query}")
 
             # Fetch *new* papers (half the original budget)
@@ -555,7 +555,6 @@ def interactive_loop(topic: str,
             # Exclude previous top papers from new candidates
             new_papers = exclude_papers(new_papers, current_papers[:args.top_k])
             merged = dedup_papers(current_papers + new_papers)
-            # merged = dedup_papers(new_papers)
             # Re-score against a refined topic signal (original topic + feedback).
             reranked = score_and_rank(merged, refined_query, tuple(args.weights), gemini_key, embed_model=args.embed_model, model_name=args.model)
 
@@ -593,7 +592,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("topic", type=str, help="Research topic, e.g., 'Graph Neural Networks for Traffic Forecasting'")
     ap.add_argument("--max-papers", type=int, default=80, help="Max papers to fetch (after dedup)")
     ap.add_argument("--top-k", type=int, default=25, help="Top K papers to include in report context")
-    ap.add_argument("--weights", nargs=3, type=float, default=[0.5, 0.3, 0.2], metavar=("W_REL", "W_CIT", "W_REC"), help="Weights for relevance, citations, recency (sum not required but recommended)")
+    ap.add_argument("--weights", nargs=3, type=float, default=[0.45, 0.15, 0.4], metavar=("W_REL", "W_CIT", "W_REC"), help="Weights for relevance, citations, recency (sum not required but recommended)")
     ap.add_argument("--embed-model", type=str, default="text-embedding-004", help="Gemini embedding model")
     ap.add_argument("--model", type=str, default="gemini-2.5-flash", help="Gemini generation model (e.g., gemini-2.5-flash)")
     ap.add_argument("--out", type=str, default="report.md", help="Output Markdown path")
