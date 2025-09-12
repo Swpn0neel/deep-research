@@ -483,6 +483,65 @@ def answer_question(question: str, report_md: str, papers: List[Paper], top_k: i
     )
     return getattr(resp, "text", "(No answer produced)")
 
+def analyze_intent(user_input: str, gemini_key: str, model_name: str = "gemini-2.5-flash") -> str:
+    import google.generativeai as genai
+    genai.configure(api_key=gemini_key)
+    model = genai.GenerativeModel(model_name)
+
+    sys_prompt = textwrap.dedent("""
+    You are an intent classifier for a research assistant tool. The user input could be:
+    1) Asking for further refinement of the report.
+    2) Asking a specific question about the report.
+    3) Expressing satisfaction and wanting to finish.
+
+    Classify the intent into exactly one of these labels: refine, ask, accept.
+    Respond only with the label: refine, ask, or accept.
+    """)
+
+    user_prompt = f"User input: {user_input}"
+
+    try:
+        resp = model.generate_content(
+            [
+                {"role": "user", "parts": [{"text": sys_prompt + "\n\n" + user_prompt}]},
+            ],
+            generation_config={"temperature": 0.0, "top_p": 0.9}
+        )
+        intent = resp.text.strip().lower()
+        if intent not in ["refine", "ask", "accept"]:
+            return "ask"  # fallback
+        return intent
+    except Exception:
+        return "ask"
+
+def generate_query_from_input(user_input: str) -> str:
+    """Generate a clear and concise search query from user's refinement input."""
+    sys_prompt = textwrap.dedent("""
+    Convert the user's feedback into a concise, plain-text search query suitable for finding academic papers.
+    The output should be a single line of text with no markdown, explanation, or extra details.
+    """)
+    user_prompt = f"User feedback: {user_input}"
+
+    resp = model.generate_content(
+        [{"role": "user", "parts": [{"text": sys_prompt + "\n\n" + user_prompt}]}],
+        generation_config={"temperature": 0.0, "top_p": 0.9}
+    )
+    return resp.text.strip()
+
+def generate_question_from_input(user_input: str) -> str:
+    """Generate a clear and concise research question from user's input."""
+    sys_prompt = textwrap.dedent("""
+    Convert the user's statement into a precise research question.
+    Output only the question in plain text, without markdown, explanation, or extra context.
+    """)
+    user_prompt = f"User statement: {user_input}"
+
+    resp = model.generate_content(
+        [{"role": "user", "parts": [{"text": sys_prompt + "\n\n" + user_prompt}]}],
+        generation_config={"temperature": 0.0, "top_p": 0.9}
+    )
+    return resp.text.strip()
+
 
 # ------------- I/O -------------
 
@@ -514,51 +573,46 @@ def interactive_loop(topic: str,
                      api_keys: Dict[str, Optional[str]],
                      gemini_key: str,
                      report_md: str) -> Tuple[List[Paper], str]:
-    """REPL loop for refinement and Q&A until the user accepts."""
+    """REPL loop that uses intent and input-driven query/question generation."""
     iteration = 1
     current_topic = topic
     current_papers = papers
     current_report = report_md
 
-    while True:
-        console.print(Panel.fit("What would you like to do next?", subtitle="Type: [refine] to improve the report, [ask] to ask questions, [accept] to finish, [exit] to quit", style="bold cyan"))
-        choice = Prompt.ask("Choice", choices=["refine", "ask", "accept", "exit"], default="accept")
+    console.print(Panel.fit("You can now type your next input. The system will infer whether you want to refine, ask questions, or accept the report.", style="bold cyan"))
 
-        if choice == "accept":
-            console.print("[bold green]Great — keeping the current report as final.[/bold green]")
-            return current_papers, current_report
-        if choice == "exit":
+    while True:
+        user_input = Prompt.ask("[bold yellow]Enter your feedback or question[/bold yellow]")
+        if not user_input.strip():
+            console.print("[yellow]Please enter some text or 'exit' to quit.[/yellow]")
+            continue
+        if user_input.strip().lower() == "exit":
             console.print("[yellow]Exiting without further changes.[/yellow]")
             return current_papers, current_report
 
-        if choice == "ask":
-            q = Prompt.ask("Enter your question (or blank to cancel)")
-            if not q.strip():
-                continue
+        intent = analyze_intent(user_input, gemini_key, model_name=args.model)
+
+        if intent == "accept":
+            console.print("[bold green]You're satisfied. Finalizing the report.[/bold green]")
+            return current_papers, current_report
+
+        elif intent == "ask":
+            question = generate_question_from_input(user_input, gemini_key, model_name=args.model)
             console.rule("Answering your question")
-            answer = answer_question(q, current_report, current_papers, args.top_k, gemini_key, model_name=args.model)
+            answer = answer_question(question, current_report, current_papers, args.top_k, gemini_key, model_name=args.model)
             console.print(Panel.fit(answer, title="Answer", border_style="magenta"))
-            # loop continues for recursive Q&A
             continue
 
-        if choice == "refine":
-            fb = Prompt.ask("Describe the refinement you want")
-            if not fb.strip():
-                continue
+        elif intent == "refine":
             iteration += 1
+            query = generate_query_from_input(user_input, gemini_key, model_name=args.model)
+            console.rule(f"Refinement #{iteration}: fetching additional papers for: {query}")
 
-            refined_query = fb.strip() if fb.strip() else topic
-            console.rule(f"Refinement #{iteration}: fetching additional papers for: {refined_query}")
-
-            # Fetch *new* papers (half the original budget)
-            new_papers = fetch_papers(refined_query, max(10, args.max_papers // 2), api_keys)
-            # Exclude previous top papers from new candidates
+            new_papers = fetch_papers(query, max(10, args.max_papers // 2), api_keys)
             new_papers = exclude_papers(new_papers, current_papers[:args.top_k])
             merged = dedup_papers(current_papers + new_papers)
-            # Re-score against a refined topic signal (original topic + feedback).
-            reranked = score_and_rank(merged, refined_query, tuple(args.weights), gemini_key, embed_model=args.embed_model, model_name=args.model)
+            reranked = score_and_rank(merged, query, tuple(args.weights), gemini_key, embed_model=args.embed_model, model_name=args.model)
 
-            # Pretty print top 10
             table = Table(title=f"Top 10 Papers after Refinement #{iteration}", box=box.SIMPLE_HEAVY)
             table.add_column("#")
             table.add_column("Title")
@@ -570,18 +624,15 @@ def interactive_loop(topic: str,
                 table.add_row(str(i), p.title[:80], str(p.year or ""), str(p.citation_count or 0), f"{p.similarity:.3f}", f"{p.score:.3f}")
             console.print(table)
 
-            # Regenerate report using refined topic and reranked papers
             current_papers = reranked
-            current_report = generate_report(refined_query, current_papers, args.top_k, gemini_key, model_name=args.model)
+            current_report = generate_report(query, current_papers, args.top_k, gemini_key, model_name=args.model)
 
-            # Autosave versioned outputs
-            stem, ext = os.path.splitext(args.out)
-            versioned_out = f"{stem}.v{iteration}{ext or '.md'}"
-            versioned_csv = f"{stem}.v{iteration}.csv"
-            versioned_json = f"{stem}.v{iteration}.json"
-            save_outputs(current_papers, current_report, versioned_out, versioned_csv, versioned_json)
+            # Save only the final version
+            save_outputs(current_papers, current_report, args.out, args.csv, args.json)
 
-            console.print(Panel.fit(f"Refinement #{iteration} complete. Review the new report ({versioned_out}).", style="green"))
+            # Display the report on the terminal
+            console.rule(f"Refinement #{iteration} - Updated Report")
+            console.print(Panel.fit(current_report, title="Research Report", border_style="green"))
 
 
 
@@ -592,7 +643,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("topic", type=str, help="Research topic, e.g., 'Graph Neural Networks for Traffic Forecasting'")
     ap.add_argument("--max-papers", type=int, default=80, help="Max papers to fetch (after dedup)")
     ap.add_argument("--top-k", type=int, default=25, help="Top K papers to include in report context")
-    ap.add_argument("--weights", nargs=3, type=float, default=[0.45, 0.15, 0.4], metavar=("W_REL", "W_CIT", "W_REC"), help="Weights for relevance, citations, recency (sum not required but recommended)")
+    ap.add_argument("--weights", nargs=3, type=float, default=[0.4, 0.25, 0.35], metavar=("W_REL", "W_CIT", "W_REC"), help="Weights for relevance, citations, recency (sum not required but recommended)")
     ap.add_argument("--embed-model", type=str, default="text-embedding-004", help="Gemini embedding model")
     ap.add_argument("--model", type=str, default="gemini-2.5-flash", help="Gemini generation model (e.g., gemini-2.5-flash)")
     ap.add_argument("--out", type=str, default="report.md", help="Output Markdown path")
