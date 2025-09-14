@@ -295,7 +295,7 @@ def _setup_gemini(api_key: str, model_name: str):
     return model, embed
 
 
-def gemini_embed(embed_fn, text: str, task_type: str = "retrieval_query", model: str = "text-embedding-004") -> np.ndarray:
+def gemini_embed(embed_fn, text: str, task_type: str = "retrieval_query", model: str = "text-embedding-001") -> np.ndarray:
     try:
         res = embed_fn(model=model, content=text, task_type=task_type)
         vec = np.array(res["embedding"], dtype=np.float32)
@@ -358,7 +358,7 @@ def dedup_papers(collected: List[Paper]) -> List[Paper]:
     return list(dedup.values())
 
 
-def score_and_rank(papers: List[Paper], topic: str, weights: Tuple[float, float, float], gemini_api_key: str, embed_model: str = "text-embedding-004", model_name: str = "gemini-2.5-flash") -> List[Paper]:
+def score_and_rank(papers: List[Paper], topic: str, weights: Tuple[float, float, float], gemini_api_key: str, embed_model: str = "text-embedding-001", model_name: str = "gemini-2.5-flash") -> List[Paper]:
     w_rel, w_cit, w_rec = weights
     _, embed_fn = _setup_gemini(gemini_api_key, model_name=model_name)
 
@@ -406,21 +406,49 @@ def generate_report(topic: str, papers: List[Paper], top_k: int, gemini_api_key:
     context_str, bibliography_str = build_context_chunks(papers, top_k)
 
     sys_prompt = textwrap.dedent(f"""
-    You are an expert research analyst. Given a topic and a set of top-ranked papers (with abstracts), write an IN-DEPTH report with:
-    1) Executive summary (200-300 words)
-    2) Background & core concepts (with simple explanations)
-    3) Comparative literature synthesis (trends, methods, datasets, benchmarks) citing papers as [#]
-    4) Critical gap analysis (methodological, data, evaluation, reproducibility, scalability)
-    5) Future research directions (prioritized, concrete, measurable)
-    6) Risks, ethics, and limitations
-    7) Practical applications and tooling landscape
-    8) Conclusion
+    You are an expert research analyst. Given a topic and a set of top-ranked papers (with abstracts), write a THOROUGH, DETAILED, and COMPREHENSIVE research report with the following structure:
+
+    1) Executive Summary (300-500 words)
+       - Provide a broad, insightful overview of the field, highlighting the most significant findings, trends, and challenges.
+       - Summarize the main contributions of the top papers, referencing them with [#] citations.
+
+    2) In-Depth Background & Core Concepts (400-600 words)
+       - Explain all relevant background, terminology, and foundational concepts in detail.
+       - Include historical context, key definitions, and major theoretical frameworks.
+       - Use clear, accessible language for non-experts.
+
+    3) Comparative Literature Synthesis (600-900 words)
+       - Analyze and compare the top papers in depth, discussing methodologies, datasets, benchmarks, and results.
+       - Identify major research clusters, approaches, and their evolution over time.
+       - Highlight consensus, controversies, and open debates, citing papers as [#].
+
+    4) Critical Gap Analysis (300-500 words)
+       - Identify and discuss methodological, data, evaluation, reproducibility, and scalability gaps in the literature.
+       - Point out under-explored areas, limitations, and weaknesses, with specific paper references.
+
+    5) Future Research Directions (300-500 words)
+       - Propose prioritized, concrete, and measurable future research directions.
+       - Suggest new methodologies, datasets, or evaluation strategies.
+       - Discuss potential for interdisciplinary work and emerging trends.
+
+    6) Risks, Ethics, and Limitations (200-400 words)
+       - Analyze ethical, societal, and practical risks associated with the research area.
+       - Discuss limitations of current approaches and possible negative impacts.
+
+    7) Practical Applications and Tooling Landscape (200-400 words)
+       - Survey real-world applications, tools, and systems based on the reviewed research.
+       - Highlight industry adoption, open-source projects, and commercial products.
+
+    8) Conclusion (150-300 words)
+       - Synthesize the main insights, reiterate the importance of the topic, and summarize key takeaways.
 
     Rules:
-    - Use clear section headings.
+    - Use clear section headings and subheadings.
     - Use inline numeric citations like [1], [2] that map to the provided bibliography.
-    - If evidence is weak, say so. Be precise and avoid hand-waving.
-    - Keep total length ~1500-2500 words unless context is sparse.
+    - If evidence is weak or missing, explicitly state so.
+    - Be precise, avoid hand-waving, and support all claims with references.
+    - Aim for a total length of 3000-5000 words, unless context is sparse.
+    - Ensure the report is self-contained and highly informative for both experts and newcomers.
     """
     )
 
@@ -644,7 +672,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--max-papers", type=int, default=80, help="Max papers to fetch (after dedup)")
     ap.add_argument("--top-k", type=int, default=25, help="Top K papers to include in report context")
     ap.add_argument("--weights", nargs=3, type=float, default=[0.4, 0.25, 0.35], metavar=("W_REL", "W_CIT", "W_REC"), help="Weights for relevance, citations, recency (sum not required but recommended)")
-    ap.add_argument("--embed-model", type=str, default="text-embedding-004", help="Gemini embedding model")
+    ap.add_argument("--embed-model", type=str, default="text-embedding-001", help="Gemini embedding model")
     ap.add_argument("--model", type=str, default="gemini-2.5-flash", help="Gemini generation model (e.g., gemini-2.5-flash)")
     ap.add_argument("--out", type=str, default="report.md", help="Output Markdown path")
     ap.add_argument("--csv", type=str, default="ranked_papers.csv", help="Output CSV path")
@@ -694,7 +722,6 @@ def main():
 
     if not args.no_interactive:
         final_papers, final_report = interactive_loop(args.topic, ranked, args, api_keys, gemini_key, report_md)
-        # save final (overwrite main outputs)
         save_outputs(final_papers, final_report, args.out, args.csv, args.json)
 
 
