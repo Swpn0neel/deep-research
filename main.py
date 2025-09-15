@@ -295,7 +295,7 @@ def _setup_gemini(api_key: str, model_name: str):
     return model, embed
 
 
-def gemini_embed(embed_fn, text: str, task_type: str = "retrieval_query", model: str = "text-embedding-001") -> np.ndarray:
+def gemini_embed(embed_fn, text: str, task_type: str = "retrieval_query", model: str = "text-embedding-004") -> np.ndarray:
     try:
         res = embed_fn(model=model, content=text, task_type=task_type)
         vec = np.array(res["embedding"], dtype=np.float32)
@@ -316,26 +316,32 @@ def cosine(a: np.ndarray, b: np.ndarray) -> float:
 # ------------- Core Pipeline -------------
 
 def fetch_papers(query: str, max_papers: int, api_keys: Dict[str, Optional[str]]) -> List[Paper]:
-    s2 = SemanticScholarClient(api_keys.get("SEMANTIC_SCHOLAR_KEY"))
-    ieee = IEEEXploreClient(api_keys.get("IEEE_API_KEY"))
-    serp = SerpAPIGoogleScholarClient(api_keys.get("SERPAPI_KEY"))
+    s2_key = api_keys.get("SEMANTIC_SCHOLAR_KEY")
+    ieee_key = api_keys.get("IEEE_API_KEY")
+    serp_key = api_keys.get("SERPAPI_KEY")
+
+    s2 = SemanticScholarClient(s2_key) if s2_key else None
+    ieee = IEEEXploreClient(ieee_key) if ieee_key else None
+    serp = SerpAPIGoogleScholarClient(serp_key) if serp_key else None
 
     collected: List[Paper] = []
 
-    console.rule("Fetching from Semantic Scholar")
-    collected.extend(s2.search(query, limit=max_papers))
+    if s2:
+        console.rule("Fetching from Semantic Scholar")
+        collected.extend(s2.search(query, limit=max_papers))
 
-    if api_keys.get("IEEE_API_KEY"):
+    if ieee_key:
         console.rule("Fetching from IEEE Xplore")
-        collected.extend(ieee.search(query, limit=min(50, max_papers//2 or 20)))
+        collected.extend(ieee.search(query, limit=min(50, max_papers // 2 or 20)))
 
-    if api_keys.get("SERPAPI_KEY"):
+    if serp_key:
         console.rule("Fetching from Google Scholar (SerpAPI)")
-        collected.extend(serp.search(query, limit=min(20, max_papers//4 or 10)))
+        collected.extend(serp.search(query, limit=min(20, max_papers // 4 or 10)))
 
     papers = dedup_papers(collected)
     console.print(f"Collected {len(papers)} unique papers.")
     return papers
+
 
 def exclude_papers(papers: List[Paper], exclude: List[Paper]) -> List[Paper]:
     """Remove papers from `papers` that match any in `exclude` by DOI or (title+year)."""
@@ -358,7 +364,7 @@ def dedup_papers(collected: List[Paper]) -> List[Paper]:
     return list(dedup.values())
 
 
-def score_and_rank(papers: List[Paper], topic: str, weights: Tuple[float, float, float], gemini_api_key: str, embed_model: str = "text-embedding-001", model_name: str = "gemini-2.5-flash") -> List[Paper]:
+def score_and_rank(papers: List[Paper], topic: str, weights: Tuple[float, float, float], gemini_api_key: str, embed_model: str = "text-embedding-004", model_name: str = "gemini-2.5-flash") -> List[Paper]:
     w_rel, w_cit, w_rec = weights
     _, embed_fn = _setup_gemini(gemini_api_key, model_name=model_name)
 
@@ -542,8 +548,11 @@ def analyze_intent(user_input: str, gemini_key: str, model_name: str = "gemini-2
     except Exception:
         return "ask"
 
-def generate_query_from_input(user_input: str) -> str:
-    """Generate a clear and concise search query from user's refinement input."""
+def generate_query_from_input(user_input: str, gemini_key: str, model_name: str = "gemini-2.5-flash") -> str:
+    import google.generativeai as genai
+    genai.configure(api_key=gemini_key)
+    model = genai.GenerativeModel(model_name)
+
     sys_prompt = textwrap.dedent("""
     Convert the user's feedback into a concise, plain-text search query suitable for finding academic papers.
     The output should be a single line of text with no markdown, explanation, or extra details.
@@ -556,8 +565,11 @@ def generate_query_from_input(user_input: str) -> str:
     )
     return resp.text.strip()
 
-def generate_question_from_input(user_input: str) -> str:
-    """Generate a clear and concise research question from user's input."""
+def generate_question_from_input(user_input: str, gemini_key: str, model_name: str = "gemini-2.5-flash") -> str:
+    import google.generativeai as genai
+    genai.configure(api_key=gemini_key)
+    model = genai.GenerativeModel(model_name)
+
     sys_prompt = textwrap.dedent("""
     Convert the user's statement into a precise research question.
     Output only the question in plain text, without markdown, explanation, or extra context.
@@ -625,7 +637,7 @@ def interactive_loop(topic: str,
             return current_papers, current_report
 
         elif intent == "ask":
-            question = generate_question_from_input(user_input, gemini_key, model_name=args.model)
+            question = generate_question_from_input(user_input, gemini_key, args.model)
             console.rule("Answering your question")
             answer = answer_question(question, current_report, current_papers, args.top_k, gemini_key, model_name=args.model)
             console.print(Panel.fit(answer, title="Answer", border_style="magenta"))
@@ -633,7 +645,7 @@ def interactive_loop(topic: str,
 
         elif intent == "refine":
             iteration += 1
-            query = generate_query_from_input(user_input, gemini_key, model_name=args.model)
+            query = generate_query_from_input(user_input, gemini_key, args.model)
             console.rule(f"Refinement #{iteration}: fetching additional papers for: {query}")
 
             new_papers = fetch_papers(query, max(10, args.max_papers // 2), api_keys)
@@ -658,11 +670,6 @@ def interactive_loop(topic: str,
             # Save only the final version
             save_outputs(current_papers, current_report, args.out, args.csv, args.json)
 
-            # Display the report on the terminal
-            console.rule(f"Refinement #{iteration} - Updated Report")
-            console.print(Panel.fit(current_report, title="Research Report", border_style="green"))
-
-
 
 # ------------- CLI -------------
 
@@ -672,7 +679,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--max-papers", type=int, default=80, help="Max papers to fetch (after dedup)")
     ap.add_argument("--top-k", type=int, default=25, help="Top K papers to include in report context")
     ap.add_argument("--weights", nargs=3, type=float, default=[0.4, 0.25, 0.35], metavar=("W_REL", "W_CIT", "W_REC"), help="Weights for relevance, citations, recency (sum not required but recommended)")
-    ap.add_argument("--embed-model", type=str, default="text-embedding-001", help="Gemini embedding model")
+    ap.add_argument("--embed-model", type=str, default="text-embedding-004", help="Gemini embedding model")
     ap.add_argument("--model", type=str, default="gemini-2.5-flash", help="Gemini generation model (e.g., gemini-2.5-flash)")
     ap.add_argument("--out", type=str, default="report.md", help="Output Markdown path")
     ap.add_argument("--csv", type=str, default="ranked_papers.csv", help="Output CSV path")
@@ -698,9 +705,16 @@ def main():
     console.rule("Deep Research CLI — Interactive")
     console.print(f"[bold]Topic:[/bold] {args.topic}")
 
+    if not api_keys["SEMANTIC_SCHOLAR_KEY"]:
+        console.print("[yellow]Warning: SEMANTIC_SCHOLAR_KEY not provided. Semantic Scholar will be skipped.[/yellow]")
+    if not api_keys["IEEE_API_KEY"]:
+        console.print("[yellow]Warning: IEEE_API_KEY not provided. IEEE Xplore will be skipped.[/yellow]")
+    if not api_keys["SERPAPI_KEY"]:
+        console.print("[yellow]Warning: SERPAPI_KEY not provided. Google Scholar will be skipped.[/yellow]")
+
     papers = fetch_papers(args.topic, args.max_papers, api_keys)
     if not papers:
-        console.print("[red]No papers found. Try broadening the query.[/red]")
+        console.print("[red]No papers found. Try broadening the query or providing API keys.[/red]")
         sys.exit(2)
 
     ranked = score_and_rank(papers, args.topic, tuple(args.weights), gemini_key, embed_model=args.embed_model, model_name=args.model)
