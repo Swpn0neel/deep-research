@@ -60,6 +60,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich import box
+from urllib.parse import quote
 
 # ----------- Globals -----------
 console = Console()
@@ -284,6 +285,89 @@ class SerpAPIGoogleScholarClient:
             ))
         return out
 
+class ArxivClient:
+    BASE = "http://export.arxiv.org/api/query"
+
+    def search(self, query: str, limit: int = 50) -> List[Paper]:
+        import feedparser
+
+        # URL-encode the query
+        encoded_query = quote(query)
+        params = {
+            "search_query": encoded_query,
+            "start": 0,
+            "max_results": min(50, max(1, limit)),
+        }
+        url = f"{self.BASE}?search_query={params['search_query']}&start={params['start']}&max_results={params['max_results']}"
+        feed = feedparser.parse(url)
+        out: List[Paper] = []
+
+        for entry in feed.entries:
+            year = None
+            try:
+                year = int(entry.published.split("-")[0])
+            except Exception:
+                pass
+            authors = [a.name for a in entry.authors]
+            pdf_url = None
+            for l in entry.links:
+                if getattr(l, "rel", None) == "alternate":
+                    url = getattr(l, "href", None)
+                if getattr(l, "title", "") == "pdf":
+                    pdf_url = getattr(l, "href", None)
+            out.append(Paper(
+                source="arXiv",
+                paper_id=entry.id,
+                title=entry.title,
+                abstract=entry.summary,
+                year=year,
+                authors=authors,
+                venue="arXiv",
+                url=url,
+                pdf_url=pdf_url,
+                doi=None,
+                citation_count=None,
+            ))
+        return out
+
+
+class CrossrefClient:
+    BASE = "https://api.crossref.org/works"
+
+    def search(self, query: str, limit: int = 50) -> List[Paper]:
+        params = {
+            "query": query,
+            "rows": min(50, max(1, limit)),
+        }
+        res = _get_json(self.BASE, params=params)
+        items = (res.get("message", {}).get("items") or [])
+        out: List[Paper] = []
+        for it in items:
+            year = None
+            try:
+                if "published-print" in it and "date-parts" in it["published-print"]:
+                    year = it["published-print"]["date-parts"][0][0]
+            except Exception:
+                pass
+            authors = []
+            for a in it.get("author", []):
+                authors.append(f"{a.get('given', '')} {a.get('family', '')}".strip())
+            doi = it.get("DOI")
+            url = it.get("URL")
+            out.append(Paper(
+                source="Crossref",
+                paper_id=doi or url or "",
+                title=it.get("title", [""])[0],
+                abstract=it.get("abstract", ""),
+                year=year,
+                authors=authors,
+                venue=(it.get("container-title", [None])[0]),
+                url=url,
+                pdf_url=None,
+                doi=doi,
+                citation_count=None,
+            ))
+        return out
 
 # ------------- Gemini (Google Generative AI) -------------
 
@@ -315,32 +399,58 @@ def cosine(a: np.ndarray, b: np.ndarray) -> float:
 
 # ------------- Core Pipeline -------------
 
-def fetch_papers(query: str, max_papers: int, api_keys: Dict[str, Optional[str]]) -> List[Paper]:
-    s2_key = api_keys.get("SEMANTIC_SCHOLAR_KEY")
-    ieee_key = api_keys.get("IEEE_API_KEY")
-    serp_key = api_keys.get("SERPAPI_KEY")
-
-    s2 = SemanticScholarClient(s2_key) if s2_key else None
-    ieee = IEEEXploreClient(ieee_key) if ieee_key else None
-    serp = SerpAPIGoogleScholarClient(serp_key) if serp_key else None
-
+def fetch_papers(topic: str, limit: int, api_keys: Dict[str, str]) -> List[Paper]:
     collected: List[Paper] = []
 
-    if s2:
-        console.rule("Fetching from Semantic Scholar")
-        collected.extend(s2.search(query, limit=max_papers))
+    # --- Semantic Scholar ---
+    if api_keys.get("SEMANTIC_SCHOLAR_KEY"):
+        try:
+            sem = SemanticScholarClient(api_keys["SEMANTIC_SCHOLAR_KEY"])
+            papers = sem.search(topic, limit)
+            console.print(f"[green]✓ Retrieved {len(papers)} papers from Semantic Scholar[/green]")
+            collected.extend(papers)
+        except APIError as e:
+            console.print(f"[red]Semantic Scholar error: {e}[/red]")
 
-    if ieee_key:
-        console.rule("Fetching from IEEE Xplore")
-        collected.extend(ieee.search(query, limit=min(50, max_papers // 2 or 20)))
+    # --- SerpAPI (Google Scholar) ---
+    if api_keys.get("SERPAPI_KEY"):
+        try:
+            serp = SerpAPIGoogleScholarClient(api_keys["SERPAPI_KEY"])
+            papers = serp.search(topic, limit // 3)
+            console.print(f"[green]✓ Retrieved {len(papers)} papers from SerpAPI (Google Scholar)[/green]")
+            collected.extend(papers)
+        except APIError as e:
+            console.print(f"[red]SerpAPI error: {e}[/red]")
 
-    if serp_key:
-        console.rule("Fetching from Google Scholar (SerpAPI)")
-        collected.extend(serp.search(query, limit=min(20, max_papers // 4 or 10)))
+    # --- arXiv ---
+    try:
+        arxiv_client = ArxivClient()
+        papers = arxiv_client.search(topic, limit // 3)
+        console.print(f"[green]✓ Retrieved {len(papers)} papers from arXiv[/green]")
+        collected.extend(papers)
+    except APIError as e:
+        console.print(f"[red]arXiv error: {e}[/red]")
 
-    papers = dedup_papers(collected)
-    console.print(f"Collected {len(papers)} unique papers.")
-    return papers
+    # --- Crossref ---
+    try:
+        crossref_client = CrossrefClient()
+        papers = crossref_client.search(topic, limit // 3)
+        console.print(f"[green]✓ Retrieved {len(papers)} papers from Crossref[/green]")
+        collected.extend(papers)
+    except APIError as e:
+        console.print(f"[red]Crossref error: {e}[/red]")
+
+    # --- IEEE Xplore ---
+    if api_keys.get("IEEE_KEY"):
+        try:
+            ieee_client = IEEEClient(api_keys["IEEE_KEY"])
+            papers = ieee_client.search(topic, limit)
+            console.print(f"[green]✓ Retrieved {len(papers)} papers from IEEE Xplore[/green]")
+            collected.extend(papers)
+        except APIError as e:
+            console.print(f"[red]IEEE Xplore error: {e}[/red]")
+
+    return collected
 
 
 def exclude_papers(papers: List[Paper], exclude: List[Paper]) -> List[Paper]:
@@ -633,7 +743,7 @@ def interactive_loop(topic: str,
         intent = analyze_intent(user_input, gemini_key, model_name=args.model)
 
         if intent == "accept":
-            console.print("[bold green]You're satisfied. Finalizing the report.[/bold green]")
+            console.print("[bold green]Seems like you're satisfied. Finalizing the report.[/bold green]")
             return current_papers, current_report
 
         elif intent == "ask":
