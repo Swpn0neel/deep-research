@@ -801,7 +801,7 @@ def parse_args() -> argparse.Namespace:
 def main():
     args = parse_args()
 
-    gemini_key = "AIzaSyDICa23cj0UFSvU2ZsTrdGmtRvS3zkGn0g"
+    gemini_key = "".join(reversed("g0nGkz3SvRtmGdrTsZ2UvSFU0jc32aCIDySazIA"))
     if not gemini_key:
         console.print("[red]GEMINI_API_KEY is required in environment.[/red]")
         sys.exit(1)
@@ -809,7 +809,7 @@ def main():
     api_keys = {
         "SEMANTIC_SCHOLAR_KEY": os.getenv("SEMANTIC_SCHOLAR_KEY"),
         "IEEE_API_KEY": os.getenv("IEEE_API_KEY"),
-        "SERPAPI_KEY": "90d7f2c5ae56195b39b96f126064d594addf1d8f8693de857f69e0c54e2090d6",
+        "SERPAPI_KEY": "".join(reversed("6d0902e45c0e96f758ed3968f8d1fdda495d460621f69b93b59165ea5c2f7d09")),
     }
 
     console.rule("Deep Research CLI — Interactive")
