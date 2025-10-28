@@ -519,6 +519,7 @@ def generate_report(topic: str, papers: List[Paper], top_k: int, gemini_api_key:
     genai.configure(api_key=gemini_api_key)
     model = genai.GenerativeModel(model_name)
 
+    # Build context + bibliography used by the model (unchanged)
     context_str, bibliography_str = build_context_chunks(papers, top_k)
 
     sys_prompt = textwrap.dedent(f"""
@@ -586,7 +587,7 @@ def generate_report(topic: str, papers: List[Paper], top_k: int, gemini_api_key:
     except Exception as e:
         raise APIError(f"Gemini generation failed: {e}")
 
-    # Prepend metadata table
+    # Prepend metadata table (unchanged)
     meta = Table(title="Top Papers Used", show_lines=False, box=box.MINIMAL_DOUBLE_HEAD)
     meta.add_column("#", style="bold")
     meta.add_column("Title")
@@ -597,7 +598,26 @@ def generate_report(topic: str, papers: List[Paper], top_k: int, gemini_api_key:
         meta.add_row(str(i), p.title[:70], str(p.year or ""), str(p.citation_count or 0), f"{p.score:.3f}")
     console.print(meta)
 
-    return md
+    refs_lines = []
+    for i, p in enumerate(papers[:top_k], 1):
+        title = (p.title or "Untitled").strip()
+        # Prefer a valid URL (paper url, pdf_url), fallback to DOI resolver if DOI available
+        url = p.url or p.pdf_url or (f"https://doi.org/{p.doi}" if p.doi else None)
+        if url:
+            title_md = f"[{title}]({url})"
+        else:
+            title_md = title
+        year = str(p.year) if p.year else "n.d."
+        # Add a shorter summary line for references
+        line = f"{i}. {title_md} — ({year})"
+        refs_lines.append(line)
+
+    references_md = "## References\n\n" + "\n\n".join(refs_lines) + "\n"
+
+    # Ensure there is a separation before appending references
+    final_md = md.rstrip() + "\n\n" + references_md
+
+    return final_md
 
 
 def answer_question(question: str, report_md: str, papers: List[Paper], top_k: int, gemini_api_key: str, model_name: str = "gemini-2.5-flash") -> str:
