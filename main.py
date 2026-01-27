@@ -11,12 +11,13 @@ Adds a user-interactive refinement loop and Q&A:
 
 Usage
 -----
-python deep_research_cli.py "your research topic here" \
+python3 main.py "your research topic here" \
     --top-k 30 \
     --max-papers 80 \
     --weights 0.5 0.3 0.2 \
-    --model gemini-2.5-flash \
     --out report.md
+
+(example: python3 main.py "medical image encrytion using chaos-based encryption" --top-k 5 --max-papers 30 --weights 0.5 0.3 0.2 --out report.md)
 
 Environment
 -----------
@@ -27,7 +28,7 @@ SERPAPI_KEY           (optional; for Google Scholar via SerpAPI)
 
 Install
 -------
-pip install google-generativeai requests numpy pandas tenacity python-dateutil tqdm rich
+pip install -r requirements.txt
 
 Notes
 -----
