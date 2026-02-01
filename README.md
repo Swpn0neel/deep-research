@@ -5,7 +5,6 @@ An interactive command-line tool for comprehensive academic research powered by 
 ## Features
 
 - **Multi-Source Paper Collection**: Fetches research papers from:
-
   - Semantic Scholar
   - IEEE Xplore
   - Google Scholar (via SerpAPI)
@@ -13,13 +12,11 @@ An interactive command-line tool for comprehensive academic research powered by 
   - Crossref
 
 - **Intelligent Paper Ranking**: Uses a weighted combination of:
-
   - Semantic relevance (using Gemini embeddings)
   - Citation count
   - Publication recency
 
 - **Interactive Refinement**:
-
   - Generate comprehensive research reports
   - Ask questions about the papers and findings
   - Refine searches based on feedback
@@ -79,7 +76,7 @@ python main.py "Graph Neural Networks for Traffic Forecasting" \
 - `--max-papers`: Maximum papers to fetch (default: 80)
 - `--top-k`: Top papers to include in report (default: 25)
 - `--weights`: Weights for relevance, citations, recency (default: 0.4 0.25 0.35)
-- `--embed-model`: Gemini embedding model (default: text-embedding-004)
+- `--embed-model`: Gemini embedding model (default: gemini-embedding-001)
 - `--model`: Gemini generation model (default: gemini-2.5-flash)
 - `--out`: Output Markdown path (default: report.md)
 - `--csv`: Output CSV path (default: ranked_papers.csv)

@@ -380,7 +380,7 @@ def _setup_gemini(api_key: str, model_name: str):
     return model, embed
 
 
-def gemini_embed(embed_fn, text: str, task_type: str = "retrieval_query", model: str = "text-embedding-004") -> np.ndarray:
+def gemini_embed(embed_fn, text: str, task_type: str = "retrieval_query", model: str = "gemini-embedding-001") -> np.ndarray:
     try:
         res = embed_fn(model=model, content=text, task_type=task_type)
         vec = np.array(res["embedding"], dtype=np.float32)
@@ -475,7 +475,7 @@ def dedup_papers(collected: List[Paper]) -> List[Paper]:
     return list(dedup.values())
 
 
-def score_and_rank(papers: List[Paper], topic: str, weights: Tuple[float, float, float], gemini_api_key: str, embed_model: str = "text-embedding-004", model_name: str = "gemini-2.5-flash") -> List[Paper]:
+def score_and_rank(papers: List[Paper], topic: str, weights: Tuple[float, float, float], gemini_api_key: str, embed_model: str = "gemini-embedding-001", model_name: str = "gemini-2.5-flash") -> List[Paper]:
     w_rel, w_cit, w_rec = weights
     _, embed_fn = _setup_gemini(gemini_api_key, model_name=model_name)
 
@@ -810,7 +810,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--max-papers", type=int, default=80, help="Max papers to fetch (after dedup)")
     ap.add_argument("--top-k", type=int, default=25, help="Top K papers to include in report context")
     ap.add_argument("--weights", nargs=3, type=float, default=[0.4, 0.25, 0.35], metavar=("W_REL", "W_CIT", "W_REC"), help="Weights for relevance, citations, recency (sum not required but recommended)")
-    ap.add_argument("--embed-model", type=str, default="text-embedding-004", help="Gemini embedding model")
+    ap.add_argument("--embed-model", type=str, default="gemini-embedding-001", help="Gemini embedding model")
     ap.add_argument("--model", type=str, default="gemini-2.5-flash", help="Gemini generation model (e.g., gemini-2.5-flash)")
     ap.add_argument("--out", type=str, default="report.md", help="Output Markdown path")
     ap.add_argument("--csv", type=str, default="ranked_papers.csv", help="Output CSV path")
