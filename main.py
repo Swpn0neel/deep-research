@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Deep Research CLI (Terminal-only) — Interactive
+Scholarian - Deep Researching Agent
 -----------------------------------------------
 
 Adds a user-interactive refinement loop and Q&A:
