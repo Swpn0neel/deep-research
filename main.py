@@ -400,6 +400,47 @@ def cosine(a: np.ndarray, b: np.ndarray) -> float:
 
 # ------------- Core Pipeline -------------
 
+query_cache = {}
+def enrich_research_query(query: str, gemini_key: str, model_name: str = "gemini-2.5-flash") -> str:
+    if query in query_cache:
+        return query_cache[query]
+    
+    import google.generativeai as genai
+    genai.configure(api_key=gemini_key)
+
+    model = genai.GenerativeModel(model_name)
+
+    sys_prompt = """
+        You improve academic literature search queries.
+
+        Rules:
+        - Output must be a concise academic search query, not a sentence.
+        - Avoid filler words like: investigating, exploring, study of, analysis of, research on.
+        - Keep only meaningful technical terms.
+        - Preserve the core research topic.
+        - Expand with some relevant technical terms if useful.
+        - Maximum 50 words.
+        - No punctuation except hyphens if needed.
+
+        Before producing the final query, ensure the result reads as a coherent research question or search phrase rather than a list of keywords.
+
+        Output ONLY the rewritten research query.
+        """
+
+    user_prompt = f"Original research query: {query}"
+
+    resp = model.generate_content(
+        [{"role": "user", "parts": [{"text": sys_prompt + "\n\n" + user_prompt}]}],
+        generation_config={
+            "temperature": 0.0,
+            "top_p": 1.0
+        }
+    )
+
+    enriched = resp.text.strip()
+    query_cache[query] = enriched
+    return enriched
+
 def fetch_papers(topic: str, limit: int, api_keys: Dict[str, str]) -> List[Paper]:
     collected: List[Paper] = []
 
@@ -776,13 +817,15 @@ def interactive_loop(topic: str,
 
         elif intent == "refine":
             iteration += 1
-            query = generate_query_from_input(user_input, gemini_key, args.model)
-            console.rule(f"Refinement #{iteration}: fetching additional papers for: {query}")
-
-            new_papers = fetch_papers(query, max(10, args.max_papers // 2), api_keys)
+            extracted_query = generate_query_from_input(user_input, gemini_key, args.model)
+            enriched_query = enrich_research_query(extracted_query, gemini_key, args.model)
+            console.rule(f"Refinement #{iteration}")
+            console.print(f"[cyan]Extracted query:[/cyan] {extracted_query}")
+            console.print(f"[green]Enriched query:[/green] {enriched_query}")
+            new_papers = fetch_papers(enriched_query, max(10, args.max_papers // 2), api_keys)
             new_papers = exclude_papers(new_papers, current_papers[:args.top_k])
             merged = dedup_papers(current_papers + new_papers)
-            reranked = score_and_rank(merged, query, tuple(args.weights), gemini_key, embed_model=args.embed_model, model_name=args.model)
+            reranked = score_and_rank(merged, enriched_query, tuple(args.weights), gemini_key, embed_model=args.embed_model, model_name=args.model)
 
             table = Table(title=f"Top 10 Papers after Refinement #{iteration}", box=box.SIMPLE_HEAVY)
             table.add_column("#")
@@ -796,7 +839,7 @@ def interactive_loop(topic: str,
             console.print(table)
 
             current_papers = reranked
-            current_report = generate_report(query, current_papers, args.top_k, gemini_key, model_name=args.model)
+            current_report = generate_report(enriched_query, current_papers, args.top_k, gemini_key, model_name=args.model)
 
             # Save only the final version
             save_outputs(current_papers, current_report, args.out, args.csv, args.json)
@@ -823,8 +866,10 @@ def main():
     args = parse_args()
 
     gemini_key = "".join(reversed("g0nGkz3SvRtmGdrTsZ2UvSFU0jc32aCIDySazIA"))
-    if not gemini_key:
-        console.print("[red]GEMINI_API_KEY is required in environment.[/red]")
+    gemini_key1 = "".join(reversed("UFfBN76fTgxdasX3SGUQn0pYL89hJaiwAySazIA"))
+    gemini_key2 = "".join(reversed("cwOQUsd6fB4g1sFrCO-9bxYbJycn4zg0CySazIA"))
+    if not gemini_key or not gemini_key1 or not gemini_key2:
+        console.print("[red]One or more GEMINI_API_KEYYs are required in environment.[/red]")
         sys.exit(1)
 
     api_keys = {
@@ -833,7 +878,7 @@ def main():
         "SERPAPI_KEY": "".join(reversed("6d0902e45c0e96f758ed3968f8d1fdda495d460621f69b93b59165ea5c2f7d09")),
     }
 
-    console.rule("Deep Research CLI — Interactive")
+    console.rule("Scholarian - Multi-Agent LLM-based Application for Paper Review and Research Analysis")
     console.print(f"[bold]Topic:[/bold] {args.topic}")
 
     if not api_keys["SEMANTIC_SCHOLAR_KEY"]:
@@ -843,12 +888,16 @@ def main():
     if not api_keys["SERPAPI_KEY"]:
         console.print("[yellow]Warning: SERPAPI_KEY not provided. Google Scholar will be skipped.[/yellow]")
 
-    papers = fetch_papers(args.topic, args.max_papers, api_keys)
+    console.print("[cyan]Enriching research query...[/cyan]")
+    enriched_query = enrich_research_query(args.topic, gemini_key1, args.model)
+    console.print(f"[green]Expanded query:[/green] {enriched_query}")
+    papers = fetch_papers(enriched_query, args.max_papers, api_keys)
+
     if not papers:
         console.print("[red]No papers found. Try broadening the query or providing API keys.[/red]")
         sys.exit(2)
 
-    ranked = score_and_rank(papers, args.topic, tuple(args.weights), gemini_key, embed_model=args.embed_model, model_name=args.model)
+    ranked = score_and_rank(papers, enriched_query, tuple(args.weights), gemini_key1, embed_model=args.embed_model, model_name=args.model)
 
     # Pretty print top 10 to terminal
     table = Table(title="Top 10 Papers", box=box.SIMPLE_HEAVY)
@@ -862,11 +911,11 @@ def main():
         table.add_row(str(i), p.title[:80], str(p.year or ""), str(p.citation_count or 0), f"{p.similarity:.3f}", f"{p.score:.3f}")
     console.print(table)
 
-    report_md = generate_report(args.topic, ranked, args.top_k, gemini_key, model_name=args.model)
+    report_md = generate_report(args.topic, ranked, args.top_k, gemini_key1, model_name=args.model)
     save_outputs(ranked, report_md, args.out, args.csv, args.json)
 
     if not args.no_interactive:
-        final_papers, final_report = interactive_loop(args.topic, ranked, args, api_keys, gemini_key, report_md)
+        final_papers, final_report = interactive_loop(args.topic, ranked, args, api_keys, gemini_key2, report_md)
         save_outputs(final_papers, final_report, args.out, args.csv, args.json)
 
 
