@@ -66,7 +66,7 @@ python main.py "Graph Neural Networks for Traffic Forecasting" \
     --top-k 30 \
     --max-papers 80 \
     --weights 0.5 0.3 0.2 \
-    --model gemini-2.5-flash \
+    --model gemini-3-flash-preview \
     --out report.md
 ```
 
@@ -77,7 +77,7 @@ python main.py "Graph Neural Networks for Traffic Forecasting" \
 - `--top-k`: Top papers to include in report (default: 25)
 - `--weights`: Weights for relevance, citations, recency (default: 0.4 0.25 0.35)
 - `--embed-model`: Gemini embedding model (default: gemini-embedding-001)
-- `--model`: Gemini generation model (default: gemini-2.5-flash)
+- `--model`: Gemini generation model (default: gemini-3-flash-preview)
 - `--out`: Output Markdown path (default: report.md)
 - `--csv`: Output CSV path (default: ranked_papers.csv)
 - `--json`: Output JSON path (default: ranked_papers.json)

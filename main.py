@@ -401,7 +401,7 @@ def cosine(a: np.ndarray, b: np.ndarray) -> float:
 # ------------- Core Pipeline -------------
 
 query_cache = {}
-def enrich_research_query(query: str, gemini_key: str, model_name: str = "gemini-2.5-flash") -> str:
+def enrich_research_query(query: str, gemini_key: str, model_name: str = "gemini-3.1-flash-lite-preview") -> str:
     if query in query_cache:
         return query_cache[query]
     
@@ -516,7 +516,7 @@ def dedup_papers(collected: List[Paper]) -> List[Paper]:
     return list(dedup.values())
 
 
-def score_and_rank(papers: List[Paper], topic: str, weights: Tuple[float, float, float], gemini_api_key: str, embed_model: str = "gemini-embedding-001", model_name: str = "gemini-2.5-flash") -> List[Paper]:
+def score_and_rank(papers: List[Paper], topic: str, weights: Tuple[float, float, float], gemini_api_key: str, embed_model: str = "gemini-embedding-001", model_name: str = "gemini-3.1-flash-lite-preview") -> List[Paper]:
     w_rel, w_cit, w_rec = weights
     _, embed_fn = _setup_gemini(gemini_api_key, model_name=model_name)
 
@@ -556,7 +556,7 @@ def build_context_chunks(papers: List[Paper], top_k: int) -> Tuple[str, str]:
     return "\n".join(context_chunks), "\n".join(bibliography)
 
 
-def generate_report(topic: str, papers: List[Paper], top_k: int, gemini_api_key: str, model_name: str = "gemini-2.5-flash") -> str:
+def generate_report(topic: str, papers: List[Paper], top_k: int, gemini_api_key: str, model_name: str = "gemini-3-flash-preview") -> str:
     import google.generativeai as genai
     genai.configure(api_key=gemini_api_key)
     model = genai.GenerativeModel(model_name)
@@ -662,7 +662,7 @@ def generate_report(topic: str, papers: List[Paper], top_k: int, gemini_api_key:
     return final_md
 
 
-def answer_question(question: str, report_md: str, papers: List[Paper], top_k: int, gemini_api_key: str, model_name: str = "gemini-2.5-flash") -> str:
+def answer_question(question: str, report_md: str, papers: List[Paper], top_k: int, gemini_api_key: str, model_name: str = "gemini-3-flash-preview") -> str:
     """Answer a user question using the current report + top-k papers as context (no regeneration)."""
     import google.generativeai as genai
     genai.configure(api_key=gemini_api_key)
@@ -689,7 +689,7 @@ def answer_question(question: str, report_md: str, papers: List[Paper], top_k: i
     )
     return getattr(resp, "text", "(No answer produced)")
 
-def analyze_intent(user_input: str, gemini_key: str, model_name: str = "gemini-2.5-flash") -> str:
+def analyze_intent(user_input: str, gemini_key: str, model_name: str = "gemini-3.1-flash-lite-preview") -> str:
     import google.generativeai as genai
     genai.configure(api_key=gemini_key)
     model = genai.GenerativeModel(model_name)
@@ -720,7 +720,7 @@ def analyze_intent(user_input: str, gemini_key: str, model_name: str = "gemini-2
     except Exception:
         return "ask"
 
-def generate_query_from_input(user_input: str, gemini_key: str, model_name: str = "gemini-2.5-flash") -> str:
+def generate_query_from_input(user_input: str, gemini_key: str, model_name: str = "gemini-3.1-flash-lite-preview") -> str:
     import google.generativeai as genai
     genai.configure(api_key=gemini_key)
     model = genai.GenerativeModel(model_name)
@@ -737,7 +737,7 @@ def generate_query_from_input(user_input: str, gemini_key: str, model_name: str 
     )
     return resp.text.strip()
 
-def generate_question_from_input(user_input: str, gemini_key: str, model_name: str = "gemini-2.5-flash") -> str:
+def generate_question_from_input(user_input: str, gemini_key: str, model_name: str = "gemini-3.1-flash-lite-preview") -> str:
     import google.generativeai as genai
     genai.configure(api_key=gemini_key)
     model = genai.GenerativeModel(model_name)
@@ -854,7 +854,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--top-k", type=int, default=25, help="Top K papers to include in report context")
     ap.add_argument("--weights", nargs=3, type=float, default=[0.4, 0.25, 0.35], metavar=("W_REL", "W_CIT", "W_REC"), help="Weights for relevance, citations, recency (sum not required but recommended)")
     ap.add_argument("--embed-model", type=str, default="gemini-embedding-001", help="Gemini embedding model")
-    ap.add_argument("--model", type=str, default="gemini-2.5-flash", help="Gemini generation model (e.g., gemini-2.5-flash)")
+    ap.add_argument("--model", type=str, default="gemini-3-flash-preview", help="Gemini generation model (e.g., gemini-3-flash-preview)")
     ap.add_argument("--out", type=str, default="report.md", help="Output Markdown path")
     ap.add_argument("--csv", type=str, default="ranked_papers.csv", help="Output CSV path")
     ap.add_argument("--json", type=str, default="ranked_papers.json", help="Output JSON path")
