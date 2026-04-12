@@ -878,7 +878,7 @@ def main():
         "SERPAPI_KEY": "".join(reversed("6d0902e45c0e96f758ed3968f8d1fdda495d460621f69b93b59165ea5c2f7d09")),
     }
 
-    console.rule("Scholarian - Multi-Agent LLM-based Application for Paper Review and Research Analysis")
+    console.rule("Scholarian - Agentic Research Assistant")
     console.print(f"[bold]Topic:[/bold] {args.topic}")
 
     if not api_keys["SEMANTIC_SCHOLAR_KEY"]:
